@@ -351,6 +351,36 @@ export const IntegratedTerminal: React.FC<IntegratedTerminalProps> = ({
                   </div>
                 </div>
 
+                {/* Mandatory Error Box with exact Line Number for Compilation & Runtime Errors */}
+                {(executionResult.status === 'Compilation Error' ||
+                  executionResult.status === 'Runtime Error' ||
+                  (executionResult.status !== 'Accepted' && executionResult.status !== 'Wrong Answer' && (executionResult.compilationOutput || executionResult.consoleOutput))) && (
+                  <div className="rounded-xl border border-rose-500/50 bg-rose-50/80 dark:bg-rose-950/40 p-4 space-y-2 text-rose-900 dark:text-rose-200">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2 font-bold font-sans text-sm text-rose-700 dark:text-rose-400">
+                        <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" />
+                        <span>{executionResult.status} Occurred</span>
+                      </div>
+                      {/* Extract line badge if present */}
+                      {(() => {
+                        const msg = executionResult.compilationOutput || executionResult.consoleOutput || '';
+                        const match = msg.match(/\[Line\s+(\d+)\]/i) || msg.match(/\bline\s+(\d+)\b/i);
+                        if (match && match[1]) {
+                          return (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-extrabold bg-rose-600 text-white shadow-sm">
+                              📍 Line {match[1]}
+                            </span>
+                          );
+                        }
+                        return null;
+                      })()}
+                    </div>
+                    <div className="font-mono text-xs bg-white/60 dark:bg-black/40 p-3 rounded-lg border border-rose-300/40 dark:border-rose-800/40 whitespace-pre-wrap leading-relaxed overflow-x-auto">
+                      {executionResult.compilationOutput || executionResult.consoleOutput || 'Error details not available.'}
+                    </div>
+                  </div>
+                )}
+
                 {/* Individual Case Output Comparison */}
                 <div className="space-y-3">
                   {executionResult.testResults.map((tr, idx) => (

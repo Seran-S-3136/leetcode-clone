@@ -233,6 +233,49 @@ export class Judge0Service {
   }
 
   /**
+   * Helper to extract 1-indexed line number from Judge0 output or stack trace
+   */
+  public static extractAndFormatLineError(
+    code: string,
+    error: any,
+    defaultTitle: string,
+    headerOffset: number = 0
+  ): { formattedMessage: string; line: number | null } {
+    let line: number | null = null;
+    const errStr = typeof error === 'string' ? error : (error && (error.stack || error.message || String(error))) || '';
+
+    if (errStr) {
+      const patterns = [
+        /(?:solution\.[a-zA-Z0-9_\-]+|[a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+):(\d+)(?::\d+)?/i,
+        /\bline\s+(\d+)\b/i,
+        /\bFile\s+".*",\s+line\s+(\d+)\b/i,
+      ];
+      for (const pat of patterns) {
+        const match = errStr.match(pat);
+        if (match && match[1]) {
+          const rawLine = parseInt(match[1], 10);
+          if (!isNaN(rawLine) && rawLine > 0) {
+            const adjusted = Math.max(1, rawLine - headerOffset);
+            if (adjusted <= code.split('\n').length + 5) {
+              line = adjusted;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    let cleanMsg = typeof error === 'string' ? error : (error && (error.message || String(error))) || '';
+    cleanMsg = cleanMsg.replace(/^(?:SyntaxError|Compilation Error|Runtime Error|Error|IndentationError):\s*/i, '').trim();
+
+    const formattedMessage = line !== null
+      ? `[Line ${line}] ${defaultTitle}: ${cleanMsg}`
+      : `${defaultTitle}: ${cleanMsg}`;
+
+    return { formattedMessage, line };
+  }
+
+  /**
    * Prepares code wrapper / harness if needed so solution classes/functions execute properly with testcase inputs
    */
   private static prepareCodeWithHarness(code: string, language: string, problemId: string, tc: TestCase): string {
@@ -571,6 +614,8 @@ export class Judge0Service {
       // Handle Compilation Error
       if (result.status.id === 6) {
         const compileErr = (result.compile_output || result.stderr || result.message || 'Compilation Error').trim();
+        const headerOffset = Math.max(0, sourceWithHarness.split('\n').length - req.code.split('\n').length);
+        const parsedErr = Judge0Service.extractAndFormatLineError(req.code, compileErr, 'Compilation Error', headerOffset);
         return {
           status: 'Compilation Error',
           verdict: 'Compilation Error',
@@ -578,11 +623,11 @@ export class Judge0Service {
           memoryMB: 12.0,
           passedCount: 0,
           totalCount: testCasesToRun.length,
-          compilationOutput: compileErr,
-          compile_output: compileErr,
-          consoleOutput: `Compilation Error: ${compileErr}`,
+          compilationOutput: parsedErr.formattedMessage,
+          compile_output: parsedErr.formattedMessage,
+          consoleOutput: parsedErr.formattedMessage,
           stdout: '',
-          stderr: compileErr,
+          stderr: parsedErr.formattedMessage,
           exitCode: result.exit_code || 1,
           exit_code: result.exit_code || 1,
           executionStatus: 'Compilation Error',
@@ -635,16 +680,27 @@ export class Judge0Service {
 
       // Stop execution on the first failed test case according to requirements
       if (!passed && req.mode === 'submit') {
-        if (verdict === 'Compilation Error') {
-          compilationOutputMsg = actualOutput || result.compile_output || 'Compilation failed.';
+        const headerOffset = Math.max(0, sourceWithHarness.split('\n').length - req.code.split('\n').length);
+        if (verdict === 'Compilation Error' || verdict === 'Runtime Error') {
+          const parsedErr = Judge0Service.extractAndFormatLineError(req.code, actualOutput || result.compile_output || result.stderr || result.message, verdict, headerOffset);
+          compilationOutputMsg = parsedErr.formattedMessage;
+          consoleOutputMsg = parsedErr.formattedMessage;
+        } else {
+          consoleOutputMsg = `${verdict}: Output mismatch on testcase or runtime exception (${result.status.description}).`;
         }
-        consoleOutputMsg = `${verdict}: Output mismatch on testcase or runtime exception (${result.status.description}).`;
         break;
       }
     }
 
     if (passedCount === testCasesToRun.length && overallVerdict === 'Accepted') {
       consoleOutputMsg = `All ${testCasesToRun.length} test cases passed successfully via Judge0 CE.`;
+    } else if (overallVerdict === 'Compilation Error' || overallVerdict === 'Runtime Error') {
+      const firstTc = testCasesToRun[0];
+      const sourceWithHarness = firstTc ? this.prepareCodeWithHarness(req.code, req.language, req.problemId, firstTc) : req.code;
+      const headerOffset = Math.max(0, sourceWithHarness.split('\n').length - req.code.split('\n').length);
+      const parsedErr = Judge0Service.extractAndFormatLineError(req.code, lastStderr || lastStdout || compilationOutputMsg, overallVerdict, headerOffset);
+      consoleOutputMsg = parsedErr.formattedMessage;
+      if (overallVerdict === 'Compilation Error') compilationOutputMsg = parsedErr.formattedMessage;
     } else if (req.mode === 'run' && overallVerdict !== 'Accepted') {
       consoleOutputMsg = `${overallVerdict}: One or more testcases failed.`;
     }

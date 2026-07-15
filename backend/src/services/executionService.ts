@@ -83,6 +83,59 @@ export interface ExecuteResponse {
 
 export class ExecutionService {
   /**
+   * Helper to extract 1-indexed line number from character position or stack trace/error message
+   * Enforces mandatory line number and clear error message formatting across all languages
+   */
+  public static extractAndFormatLineError(
+    code: string,
+    error: any,
+    defaultTitle: string,
+    headerOffset: number = 0,
+    charPos?: number
+  ): { formattedMessage: string; line: number | null } {
+    let line: number | null = null;
+
+    // 1. Calculate line from character index if given (e.g., bracket syntax validation)
+    if (charPos !== undefined && charPos >= 0 && charPos < code.length) {
+      line = code.substring(0, charPos).split('\n').length;
+    }
+
+    const errStr = typeof error === 'string' ? error : (error && (error.stack || error.message || String(error))) || '';
+
+    // 2. Extract line from compiler/runtime stack trace if charPos was not provided
+    if (line === null && errStr) {
+      const patterns = [
+        /(?:<anonymous>|evalmachine\.<anonymous>|Solution\.java|Main\.java|solution\.[a-zA-Z0-9_\-]+|[a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+):(\d+)(?::\d+)?/i,
+        /\bline\s+(\d+)\b/i,
+        /\bFile\s+".*",\s+line\s+(\d+)\b/i,
+      ];
+      for (const pat of patterns) {
+        const match = errStr.match(pat);
+        if (match && match[1]) {
+          const rawLine = parseInt(match[1], 10);
+          if (!isNaN(rawLine) && rawLine > 0) {
+            const adjusted = Math.max(1, rawLine - headerOffset);
+            if (adjusted <= code.split('\n').length + 5) {
+              line = adjusted;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Clean up duplicate prefixes
+    let cleanMsg = typeof error === 'string' ? error : (error && (error.message || String(error))) || '';
+    cleanMsg = cleanMsg.replace(/^(?:SyntaxError|Compilation Error|Runtime Error|Error|IndentationError):\s*/i, '').trim();
+
+    const formattedMessage = line !== null
+      ? `[Line ${line}] ${defaultTitle}: ${cleanMsg}`
+      : `${defaultTitle}: ${cleanMsg}`;
+
+    return { formattedMessage, line };
+  }
+
+  /**
    * Pre-execution Universal Syntax & Bracket Balance Compilation Check
    * Replicates online code editor (LeetCode/Judge0) compilation step before execution
    */
@@ -103,21 +156,23 @@ export class ExecutionService {
         stack.push({ char: ch, pos: i });
       } else if (ch === ')' || ch === '}' || ch === ']') {
         if (stack.length === 0 || stack[stack.length - 1].char !== pairs[ch]) {
+          const lineNum = code.substring(0, i).split('\n').length;
           return {
             valid: false,
-            compilationOutput: `Compilation Error: Mismatched or unclosed bracket '${ch}'. Check that parentheses '()', braces '{}', and brackets '[]' are closed in correct nesting order.`,
-            consoleOutput: `Compilation Error: Syntax bracket mismatch near character '${ch}'.`,
+            compilationOutput: `[Line ${lineNum}] Compilation Error: Mismatched or unclosed bracket '${ch}'. Check that parentheses '()', braces '{}', and brackets '[]' are closed in correct nesting order.`,
+            consoleOutput: `[Line ${lineNum}] Compilation Error: Syntax bracket mismatch near character '${ch}'.`,
           };
         }
         stack.pop();
       }
     }
     if (stack.length > 0) {
-      const unclosed = stack[stack.length - 1].char;
+      const unclosedItem = stack[stack.length - 1];
+      const lineNum = code.substring(0, unclosedItem.pos).split('\n').length;
       return {
         valid: false,
-        compilationOutput: `Compilation Error: Unclosed bracket '${unclosed}' found. Check that all opening braces and parentheses have matching closing brackets.`,
-        consoleOutput: `Compilation Error: Unclosed bracket '${unclosed}'.`,
+        compilationOutput: `[Line ${lineNum}] Compilation Error: Unclosed bracket '${unclosedItem.char}' found on line ${lineNum}. Check that all opening braces and parentheses have matching closing brackets.`,
+        consoleOutput: `[Line ${lineNum}] Compilation Error: Unclosed bracket '${unclosedItem.char}'.`,
       };
     }
 
@@ -135,50 +190,53 @@ export class ExecutionService {
         }
         new Function(jsCode);
       } catch (err: any) {
+        const parsed = ExecutionService.extractAndFormatLineError(code, err, 'Compilation Error', 0);
         return {
           valid: false,
-          compilationOutput: `SyntaxError: ${err.message || 'Invalid JavaScript/TypeScript syntax.'}`,
-          consoleOutput: `Compilation Error: ${err.message || 'Syntax error in submitted code.'}`,
+          compilationOutput: parsed.formattedMessage,
+          consoleOutput: parsed.formattedMessage,
         };
       }
     } else if (language === 'java' || language === 'cpp' || language === 'c++' || language === 'csharp') {
       if (!/\b(class|struct)\s+Solution\b/.test(code)) {
         return {
           valid: false,
-          compilationOutput: `Compilation Error: Missing required class declaration 'class Solution'.`,
-          consoleOutput: `Compilation Error: Code must define 'class Solution'.`,
+          compilationOutput: `[Line 1] Compilation Error: Missing required class declaration 'class Solution'.`,
+          consoleOutput: `[Line 1] Compilation Error: Code must define 'class Solution'.`,
         };
       }
     } else if (language === 'c') {
       if (!/\b(int|void|bool|char|struct|double|float|long|short)\b/.test(code)) {
         return {
           valid: false,
-          compilationOutput: `Compilation Error: Valid C function or struct declaration required.`,
-          consoleOutput: `Compilation Error: Valid C function or struct required.`,
+          compilationOutput: `[Line 1] Compilation Error: Valid C function or struct declaration required.`,
+          consoleOutput: `[Line 1] Compilation Error: Valid C function or struct required.`,
         };
       }
     } else if (language === 'rust') {
       if (!/\b(impl|fn)\b/.test(code)) {
         return {
           valid: false,
-          compilationOutput: `Compilation Error: Missing 'impl Solution' or function definition 'fn '.`,
-          consoleOutput: `Compilation Error: Rust function/impl required.`,
+          compilationOutput: `[Line 1] Compilation Error: Missing 'impl Solution' or function definition 'fn '.`,
+          consoleOutput: `[Line 1] Compilation Error: Rust function/impl required.`,
         };
       }
     } else if (language === 'go' || language === 'golang') {
       if (!/\bfunc\b/.test(code)) {
         return {
           valid: false,
-          compilationOutput: `Compilation Error: Missing function declaration 'func '.`,
-          consoleOutput: `Compilation Error: Go function declaration required.`,
+          compilationOutput: `[Line 1] Compilation Error: Missing function declaration 'func '.`,
+          consoleOutput: `[Line 1] Compilation Error: Go function declaration required.`,
         };
       }
     } else if (language === 'python' || language === 'python3' || language === 'py') {
       if ((/\b(def|if|for|while)\b/.test(stripped)) && !stripped.includes(':')) {
+        const lineIdx = code.split('\n').findIndex((l) => /\b(def|if|for|while)\b/.test(l) && !l.includes(':'));
+        const lineNum = lineIdx !== -1 ? lineIdx + 1 : 1;
         return {
           valid: false,
-          compilationOutput: `IndentationError / SyntaxError: Missing colon ':' after method definition or control flow statement.`,
-          consoleOutput: `Compilation Error: Python syntax error (missing ':').`,
+          compilationOutput: `[Line ${lineNum}] IndentationError / SyntaxError: Missing colon ':' after method definition or control flow statement on line ${lineNum}.`,
+          consoleOutput: `[Line ${lineNum}] Compilation Error: Python syntax error (missing ':').`,
         };
       }
     }
@@ -594,14 +652,15 @@ Return ONLY valid JSON without markdown block wrappers:
         }
       } catch (err: any) {
         const isSyntaxError = err instanceof SyntaxError || err.name === 'SyntaxError';
+        const parsedErr = ExecutionService.extractAndFormatLineError(code, err, isSyntaxError ? 'Compilation Error' : 'Runtime Error', 2);
         return {
           status: isSyntaxError ? 'Compilation Error' : 'Runtime Error',
           runtimeMs: Math.max(1, Math.round(performance.now() - startTimestamp)),
           memoryMB: 19.2,
           passedCount: 0,
           totalCount: testCases.length,
-          compilationOutput: isSyntaxError ? `SyntaxError: ${err.message}` : 'Compiled successfully.',
-          consoleOutput: `${isSyntaxError ? 'Compilation Error' : 'Runtime Error'}: ${err.message}`,
+          compilationOutput: isSyntaxError ? parsedErr.formattedMessage : 'Compiled successfully.',
+          consoleOutput: parsedErr.formattedMessage,
           testResults: [],
         };
       }
@@ -697,15 +756,17 @@ Return ONLY valid JSON without markdown block wrappers:
         child.on('close', (code) => resolve({ status: code !== null ? code : -1, stderr }));
       });
 
+      const headerOffset = javaPrefix.split('\n').length - 1;
       if (compileResult.status !== 0) {
+        const parsedErr = ExecutionService.extractAndFormatLineError(code, compileResult.stderr, 'Compilation Error', headerOffset);
         return {
           status: 'Compilation Error',
           runtimeMs: Math.max(1, Math.round(performance.now() - startTimestamp)),
           memoryMB: 18.0,
           passedCount: 0,
           totalCount: testCases.length,
-          compilationOutput: compileResult.stderr.trim() || 'Compilation Error',
-          consoleOutput: `Compilation Error:\n${compileResult.stderr.trim()}`,
+          compilationOutput: parsedErr.formattedMessage,
+          consoleOutput: parsedErr.formattedMessage,
           testResults: [],
         };
       }
@@ -743,6 +804,8 @@ Return ONLY valid JSON without markdown block wrappers:
         } catch (err: any) {
           const isTLE = err.message === 'Time Limit Exceeded';
           const errStatus = isTLE ? 'Time Limit Exceeded' : 'Runtime Error';
+          const headerOffset = javaPrefix.split('\n').length - 1;
+          const parsedErr = ExecutionService.extractAndFormatLineError(code, err, errStatus, headerOffset);
           return {
             status: errStatus,
             runtimeMs: Math.max(1, Math.round(performance.now() - startTimestamp)),
@@ -750,7 +813,7 @@ Return ONLY valid JSON without markdown block wrappers:
             passedCount,
             totalCount: testCases.length,
             compilationOutput: 'Compiled successfully.',
-            consoleOutput: `${errStatus}: ${err.message}`,
+            consoleOutput: parsedErr.formattedMessage,
             testResults,
           };
         }
@@ -848,10 +911,10 @@ Return ONLY valid JSON without markdown block wrappers:
 
     for (const tc of testCases) {
       let actual = '';
+      const cleanCode = code.replace(/from __future__ import annotations\n?/g, '');
+      const pyDefs = `class ListNode:\n    def __init__(self, val=0, next=None):\n        self.val = val\n        self.next = next\nclass TreeNode:\n    def __init__(self, val=0, left=None, right=None):\n        self.val = val\n        self.left = left\n        self.right = right\n`;
+      const pyPrefix = `from __future__ import annotations\nimport sys, json, math, collections, itertools, functools, typing\nfrom typing import *\n${pyDefs}${cleanCode}`;
       try {
-        const cleanCode = code.replace(/from __future__ import annotations\n?/g, '');
-        const pyDefs = `class ListNode:\n    def __init__(self, val=0, next=None):\n        self.val = val\n        self.next = next\nclass TreeNode:\n    def __init__(self, val=0, left=None, right=None):\n        self.val = val\n        self.left = left\n        self.right = right\n`;
-        const pyPrefix = `from __future__ import annotations\nimport sys, json, math, collections, itertools, functools, typing\nfrom typing import *\n${pyDefs}${cleanCode}`;
         let harnessScript = pyPrefix;
         if (problemId === 'two-sum' && code.includes('twoSum')) {
           harnessScript = `${pyPrefix}\nimport json, sys\nlines = sys.stdin.read().strip().split('\\n')\nif len(lines) >= 2:\n    nums = [int(x) for x in lines[0].split()]\n    target = int(lines[1])\n    sol = Solution() if 'Solution' in globals() else None\n    res = sol.twoSum(nums, target) if sol else twoSum(nums, target)\n    print(json.dumps(res).replace(' ', ''))`;
@@ -873,14 +936,15 @@ Return ONLY valid JSON without markdown block wrappers:
         const isTimeLimit = err.message === 'Time Limit Exceeded';
         const isSyntax = String(err.message || '').includes('SyntaxError') || String(err.message || '').includes('IndentationError');
         const errStatus = isTimeLimit ? 'Time Limit Exceeded' : (isSyntax ? 'Compilation Error' : 'Runtime Error');
+        const parsedErr = ExecutionService.extractAndFormatLineError(code, err, errStatus, pyPrefix.split('\n').length - 1);
         return {
           status: errStatus,
           runtimeMs: Math.max(1, Math.round(performance.now() - startTimestamp)),
           memoryMB: 18.5,
           passedCount: 0,
           totalCount: testCases.length,
-          compilationOutput: isTimeLimit ? 'Execution Timed Out.' : (isSyntax ? `Syntax / Compilation Error:\n${err.message}` : `Python Error: ${err.message}`),
-          consoleOutput: `${errStatus}: ${err.message}`,
+          compilationOutput: isTimeLimit ? 'Execution Timed Out.' : parsedErr.formattedMessage,
+          consoleOutput: parsedErr.formattedMessage,
           testResults: [],
         };
       }

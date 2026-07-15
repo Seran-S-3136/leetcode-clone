@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+*.env
+serviceAccountKey.json
+*.log
+*.tsbuildinfo
+.git
+.gitignore
+README.md

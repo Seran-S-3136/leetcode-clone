@@ -19,16 +19,44 @@ import {
 
 export default function DashboardPage() {
   const { user, solvedProblems, problems, submissions } = useApp();
+  const [mounted, setMounted] = React.useState(false);
 
-  // Compute stats
+  React.useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Compute exact unique solved problems directly from solvedProblems and Accepted submissions
+  const acceptedProblemIds = React.useMemo(() => {
+    const ids = new Set<string>();
+    Array.from(solvedProblems).forEach((id) => ids.add(id));
+    submissions.forEach((s) => {
+      if (s.status === 'Accepted' && s.problemId) {
+        ids.add(s.problemId);
+      }
+    });
+    return ids;
+  }, [solvedProblems, submissions]);
+
+  if (!mounted) {
+    return (
+      <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 space-y-8 animate-pulse">
+        <div className="h-32 rounded-2xl bg-gray-200 dark:bg-gray-800/60" />
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+          <div className="lg:col-span-7 h-80 rounded-2xl bg-gray-200 dark:bg-gray-800/60" />
+          <div className="lg:col-span-5 h-80 rounded-2xl bg-gray-200 dark:bg-gray-800/60" />
+        </div>
+      </div>
+    );
+  }
+
   const totalEasy = problems.filter((p) => p.difficulty === 'Easy').length || 1;
   const totalMedium = problems.filter((p) => p.difficulty === 'Medium').length || 1;
   const totalHard = problems.filter((p) => p.difficulty === 'Hard').length || 1;
 
-  const solvedEasy = user?.solvedCount?.easy ?? 0;
-  const solvedMedium = user?.solvedCount?.medium ?? 0;
-  const solvedHard = user?.solvedCount?.hard ?? 0;
-  const totalSolved = solvedEasy + solvedMedium + solvedHard;
+  const solvedEasy = problems.filter((p) => (acceptedProblemIds.has(p.id) || acceptedProblemIds.has(p.slug)) && p.difficulty === 'Easy').length;
+  const solvedMedium = problems.filter((p) => (acceptedProblemIds.has(p.id) || acceptedProblemIds.has(p.slug)) && p.difficulty === 'Medium').length;
+  const solvedHard = problems.filter((p) => (acceptedProblemIds.has(p.id) || acceptedProblemIds.has(p.slug)) && p.difficulty === 'Hard').length;
+  const totalSolved = acceptedProblemIds.size;
 
   const easyPercent = Math.min(100, Math.round((solvedEasy / totalEasy) * 100));
   const medPercent = Math.min(100, Math.round((solvedMedium / totalMedium) * 100));

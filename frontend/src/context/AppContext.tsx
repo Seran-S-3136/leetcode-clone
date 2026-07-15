@@ -58,39 +58,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Initially un-signed in / unregistered state
   const [user, setUserState] = useState<UserProfile | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
-  const [deletedProblemIds, setDeletedProblemIds] = useState<Set<string>>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('leetcode_deleted_problem_ids');
-      if (saved) {
-        try {
-          return new Set(JSON.parse(saved));
-        } catch {}
-      }
-    }
-    return new Set<string>();
-  });
-  const [problems, setProblems] = useState<Problem[]>(() => {
-    let deletedSet = new Set<string>();
-    if (typeof window !== 'undefined') {
-      const savedDel = localStorage.getItem('leetcode_deleted_problem_ids');
-      if (savedDel) {
-        try { deletedSet = new Set(JSON.parse(savedDel)); } catch {}
-      }
-    }
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('leetcode_custom_problems');
-      if (saved) {
-        try {
-          const customList: Problem[] = JSON.parse(saved);
-          const seedIds = new Set(SEED_PROBLEMS_FRONTEND.map((p) => p.id));
-          const uniqueCustom = customList.filter((c) => !seedIds.has(c.id) && !deletedSet.has(c.id) && !deletedSet.has(c.slug));
-          const activeSeeds = SEED_PROBLEMS_FRONTEND.filter((sp) => !deletedSet.has(sp.id) && !deletedSet.has(sp.slug));
-          return [...uniqueCustom, ...activeSeeds];
-        } catch {}
-      }
-    }
-    return SEED_PROBLEMS_FRONTEND.filter((sp) => !deletedSet.has(sp.id) && !deletedSet.has(sp.slug));
-  });
+  const [deletedProblemIds, setDeletedProblemIds] = useState<Set<string>>(new Set<string>());
+  const [problems, setProblems] = useState<Problem[]>(SEED_PROBLEMS_FRONTEND);
   const [solvedProblems, setSolvedProblems] = useState<Set<string>>(new Set<string>());
   const [submissions, setSubmissions] = useState<Submission[]>([]);
 
@@ -152,6 +121,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             data.role = isAdminEmail ? 'admin' : 'user';
             setUserState(data);
             localStorage.setItem(cacheKey, JSON.stringify(data));
+            setDoc(doc(db, 'users', firebaseUser.uid), {
+              role: data.role,
+              email: fallbackProfile.email,
+              displayName: fallbackProfile.displayName || data.displayName || 'Developer',
+            }, { merge: true }).catch(() => {});
+          } else {
+            setUserState(fallbackProfile);
+            localStorage.setItem(cacheKey, JSON.stringify(fallbackProfile));
+            await setDoc(doc(db, 'users', firebaseUser.uid), fallbackProfile, { merge: true }).catch(() => {});
           }
         } catch (err: any) {
           if (!err?.message?.includes('offline')) {
@@ -176,6 +154,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     } else {
       document.documentElement.classList.add('dark');
+    }
+
+    let loadedDeletedSet = new Set<string>();
+    const savedDel = localStorage.getItem('leetcode_deleted_problem_ids');
+    if (savedDel) {
+      try {
+        loadedDeletedSet = new Set(JSON.parse(savedDel));
+        setDeletedProblemIds(loadedDeletedSet);
+      } catch {}
+    }
+
+    const savedCustom = localStorage.getItem('leetcode_custom_problems');
+    if (savedCustom) {
+      try {
+        const customList: Problem[] = JSON.parse(savedCustom);
+        const seedIds = new Set(SEED_PROBLEMS_FRONTEND.map((p) => p.id));
+        const uniqueCustom = customList.filter((c) => !seedIds.has(c.id) && !loadedDeletedSet.has(c.id) && !loadedDeletedSet.has(c.slug));
+        const activeSeeds = SEED_PROBLEMS_FRONTEND.filter((sp) => !loadedDeletedSet.has(sp.id) && !loadedDeletedSet.has(sp.slug));
+        setProblems([...uniqueCustom, ...activeSeeds]);
+      } catch {}
+    } else if (loadedDeletedSet.size > 0) {
+      setProblems(SEED_PROBLEMS_FRONTEND.filter((sp) => !loadedDeletedSet.has(sp.id) && !loadedDeletedSet.has(sp.slug)));
     }
 
     const savedSubmissions = localStorage.getItem('leetcode_submissions');
@@ -390,9 +390,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // Keep user profile solvedCount perfectly synchronized with actual unique accepted submissions & solved problems set
+  useEffect(() => {
+    if (!user || problems.length === 0) return;
+
+    const acceptedIds = new Set<string>(Array.from(solvedProblems));
+    submissions.forEach((s) => {
+      if (s.status === 'Accepted' && s.problemId) {
+        acceptedIds.add(s.problemId);
+      }
+    });
+
+    let easy = 0, medium = 0, hard = 0;
+    acceptedIds.forEach((idOrSlug) => {
+      const p = problems.find((item) => item.id === idOrSlug || item.slug === idOrSlug);
+      if (p) {
+        if (p.difficulty === 'Easy') easy++;
+        else if (p.difficulty === 'Medium') medium++;
+        else if (p.difficulty === 'Hard') hard++;
+      }
+    });
+
+    const currentCount = user.solvedCount || { easy: 0, medium: 0, hard: 0 };
+    if (currentCount.easy !== easy || currentCount.medium !== medium || currentCount.hard !== hard) {
+      const updatedProfile: UserProfile = {
+        ...user,
+        solvedCount: { easy, medium, hard },
+      };
+      setUserState(updatedProfile);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(`leetcode_user_profile_${user.uid}`, JSON.stringify(updatedProfile));
+      }
+      if (user.uid && user.uid !== 'demo-user-001') {
+        setDoc(doc(db, 'users', user.uid), updatedProfile, { merge: true }).catch(() => {});
+      }
+    }
+  }, [solvedProblems, submissions, problems, user?.uid]);
+
   const addSolvedProblem = (problemId: string) => {
-    const isAlreadySolved = solvedProblems.has(problemId);
+    const prob = problems.find((p) => p.id === problemId || p.slug === problemId);
+    const isAlreadySolved = solvedProblems.has(problemId) || (prob && (solvedProblems.has(prob.id) || solvedProblems.has(prob.slug)));
+
     const updatedSolvedSet = new Set(solvedProblems).add(problemId);
+    if (prob) {
+      updatedSolvedSet.add(prob.id).add(prob.slug);
+    }
     setSolvedProblems(updatedSolvedSet);
     if (typeof window !== 'undefined') {
       const storageKey = user?.uid ? `leetcode_solved_problem_ids_${user.uid}` : 'leetcode_solved_problem_ids_anon';
@@ -400,7 +442,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     if (!isAlreadySolved) {
-      const prob = problems.find((p) => p.id === problemId || p.slug === problemId);
       const difficulty = prob?.difficulty || 'Easy';
 
       const currentProfile: UserProfile = user || {
@@ -448,6 +489,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     if (sub.status === 'Accepted') {
       addSolvedProblem(sub.problemId);
+    }
+    if (user?.uid && user.uid !== 'demo-user-001') {
+      setDoc(doc(db, 'submissions', `${user.uid}_${Date.now()}`), {
+        ...sub,
+        userId: user.uid,
+        userEmail: user.email || 'developer@codearena.dev',
+        userName: user.displayName || 'Developer',
+      }, { merge: true }).catch(() => {});
     }
   };
 

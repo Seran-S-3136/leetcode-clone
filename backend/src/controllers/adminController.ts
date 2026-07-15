@@ -151,3 +151,111 @@ export const deleteProblemHandler = async (req: Request, res: Response) => {
     return res.status(500).json({ error: error.message || 'Failed to delete problem.' });
   }
 };
+
+export const getUsersHandler = async (req: Request, res: Response) => {
+  try {
+    const usersMap = new Map<string, any>();
+
+    if (admin.apps.length) {
+      try {
+        // 1. Fetch from Firebase Authentication
+        const listUsersResult = await admin.auth().listUsers(1000);
+        listUsersResult.users.forEach((userRecord) => {
+          const email = userRecord.email || '';
+          const isAdmin = email.trim().toLowerCase() === 'seran7869@gmail.com';
+          usersMap.set(userRecord.uid, {
+            uid: userRecord.uid,
+            email: email || `${userRecord.uid}@codearena.dev`,
+            displayName: userRecord.displayName || email.split('@')[0] || 'Platform User',
+            role: isAdmin ? 'admin' : 'user',
+            solvedCount: { easy: 0, medium: 0, hard: 0 },
+            streak: 1,
+            acceptanceRate: 100,
+            createdAt: userRecord.metadata.creationTime || new Date().toISOString(),
+          });
+        });
+      } catch (authErr) {
+        console.warn('Failed to list Auth users via Admin SDK:', authErr);
+      }
+
+      try {
+        // 2. Fetch from Firestore users collection
+        const usersSnap = await admin.firestore().collection('users').get();
+        usersSnap.forEach((docSnap) => {
+          const data = docSnap.data();
+          const uid = data.uid || docSnap.id;
+          const email = data.email || '';
+          const isAdmin = email.trim().toLowerCase() === 'seran7869@gmail.com' || data.role === 'admin';
+          const existing = usersMap.get(uid) || {
+            uid,
+            email: email || `${uid}@codearena.dev`,
+            displayName: data.displayName || email.split('@')[0] || 'Platform User',
+            role: isAdmin ? 'admin' : 'user',
+            solvedCount: { easy: 0, medium: 0, hard: 0 },
+            streak: 1,
+            acceptanceRate: 100,
+            createdAt: data.createdAt || new Date().toISOString(),
+          };
+          usersMap.set(uid, {
+            ...existing,
+            ...data,
+            uid,
+            role: isAdmin ? 'admin' : (data.role || existing.role),
+            solvedCount: data.solvedCount || existing.solvedCount,
+            streak: data.streak || existing.streak || 1,
+            acceptanceRate: data.acceptanceRate || existing.acceptanceRate || 100,
+          });
+        });
+      } catch (fsErr) {
+        console.warn('Failed to get Firestore users collection:', fsErr);
+      }
+
+      try {
+        // 3. Fetch from Firestore submissions to aggregate real solved counts across all users
+        const submissionsSnap = await admin.firestore().collection('submissions').get();
+        const userAcceptedSet = new Map<string, Set<string>>();
+        submissionsSnap.forEach((docSnap) => {
+          const sub = docSnap.data();
+          if (sub.status === 'Accepted' && sub.userId && sub.problemId) {
+            if (!userAcceptedSet.has(sub.userId)) {
+              userAcceptedSet.set(sub.userId, new Set());
+            }
+            userAcceptedSet.get(sub.userId)!.add(sub.problemId);
+          }
+        });
+
+        userAcceptedSet.forEach((acceptedIds, uid) => {
+          if (usersMap.has(uid)) {
+            const u = usersMap.get(uid);
+            const totalInProfile = (u.solvedCount?.easy || 0) + (u.solvedCount?.medium || 0) + (u.solvedCount?.hard || 0);
+            if (totalInProfile < acceptedIds.size) {
+              u.solvedCount = {
+                easy: acceptedIds.size,
+                medium: 0,
+                hard: 0,
+              };
+            }
+          } else {
+            usersMap.set(uid, {
+              uid,
+              email: `${uid}@codearena.dev`,
+              displayName: 'Platform User',
+              role: 'user',
+              solvedCount: { easy: acceptedIds.size, medium: 0, hard: 0 },
+              streak: 1,
+              acceptanceRate: 100,
+              createdAt: new Date().toISOString(),
+            });
+          }
+        });
+      } catch (subErr) {
+        console.warn('Failed to aggregate submissions:', subErr);
+      }
+    }
+
+    const usersList = Array.from(usersMap.values());
+    return res.status(200).json({ success: true, users: usersList });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error?.message || 'Error fetching users' });
+  }
+};

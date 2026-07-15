@@ -13,6 +13,7 @@ import {
   updateProblemHandler,
   deleteProblemHandler,
   seedFirebaseHandler,
+  getUsersHandler,
 } from '../controllers/adminController';
 
 const router = Router();
@@ -36,5 +37,6 @@ router.put('/admin/problems/:id', updateProblemHandler);
 router.delete('/admin/problems/:id', deleteProblemHandler);
 router.post('/admin/seed-firebase', seedFirebaseHandler);
 router.get('/admin/seed-firebase', seedFirebaseHandler);
+router.get('/admin/users', getUsersHandler);
 
 export default router;
