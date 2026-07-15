@@ -18,3 +18,9 @@ services:
         sync: false
       - key: FIREBASE_PRIVATE_KEY
         sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JUDGE0_API_URL
+        value: https://ce.judge0.com
+      - key: JUDGE0_API_KEY
+        sync: false
